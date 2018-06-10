@@ -609,8 +609,9 @@ void CUDAMiner::search(
 		if (m_current_index >= s_numStreams)
 		{
 			CUDA_SAFE_CALL(cudaStreamSynchronize(stream));
-			found_count = buffer->count;
+			found_count = buffer->count;			
 			if (found_count) {
+				cnote << "found_count:" << found_count;
 				buffer->count = 0;
 				if (found_count > SEARCH_RESULTS)
 					found_count = SEARCH_RESULTS;

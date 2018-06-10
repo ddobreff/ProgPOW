@@ -131,6 +131,31 @@ void ethash_calculate_dag_item(
 	SHA3_512(ret->bytes, ret->bytes, sizeof(node));
 }
 
+void progpow_calculate_dag_item(
+	node* const ret,
+	uint32_t node_index,
+	ethash_light_t const light
+)
+{
+	uint32_t num_parent_nodes = (uint32_t) (light->cache_size / sizeof(node));
+	node const* cache_nodes = (node const *) light->cache;
+	node const* init = &cache_nodes[node_index % num_parent_nodes];
+	memcpy(ret, init, sizeof(node));
+	ret->words[0] ^= node_index;
+	SHA3_512p(ret->bytes, ret->bytes, sizeof(node));
+
+	for (uint32_t i = 0; i != ETHASH_DATASET_PARENTS; ++i) {
+		uint32_t parent_index = fnv_hash(node_index ^ i, ret->words[i % NODE_WORDS]) % num_parent_nodes;
+		node const *parent = &cache_nodes[parent_index];
+		{
+			for (unsigned w = 0; w != NODE_WORDS; ++w) {
+				ret->words[w] = fnv_hash(ret->words[w], parent->words[w]);
+			}
+		}
+	}
+	SHA3_512p(ret->bytes, ret->bytes, sizeof(node));
+}
+
 static bool ethash_hash(
 	ethash_return_value_t* ret,
 	node const* full_nodes,
@@ -214,6 +239,243 @@ static bool ethash_hash(
 	return true;
 }
 
+// manual compilation of getKern, progpowLoop
+//#define rnd() (kiss99(rnd_state))
+#define mix_src() (mix[(RND() % PROGPOW_REGS)])
+#define mix_dst() (mix[(mix_seq[(mix_seq_cnt++)%PROGPOW_REGS])])
+
+static uint8_t rnd_array[1000];
+static uint32_t rnd_index = 0;
+static uint8_t RND(void) { 
+	uint8_t r = rnd_array[rnd_index];
+	rnd_index++;
+	return r;
+}
+// generate predefined random number sequences per getKern
+static void rnd(void) {
+	rnd_array[rnd_index] = kiss99(rnd_state);
+	rnd_index++;
+}
+
+static void swap(int *a, int *b) {
+    int t = *a;
+    *a = *b;
+    *b = t;
+}
+
+#define ROTL32(x,n) __funnelshift_l((x), (x), (n))
+#define ROTR32(x,n) __funnelshift_r((x), (x), (n))
+#define min(a,b) ((a<b) ? a : b)
+#define mul_hi(a, b) __umulhi(a, b)
+#define clz(a) __clz(a)
+#define popcount(a) __popc(a)
+
+#define PROGPOW_LANES			32
+#define PROGPOW_REGS			16
+#define PROGPOW_CNT_MEM			64
+#define PROGPOW_CNT_MATH		8
+#define PROGPOW_CACHE_WORDS  4096
+
+// Merge new data from b into the value in a
+// Assuming A has high entropy only do ops that retain entropy, even if B is low entropy
+// (IE don't do A&B)
+static void merge(int *a, int b, uint32_t r)
+{
+        switch (r % 4)
+        {
+        case 0: *a = ( (*a) * 33) + b ;
+		break;
+        case 1: *a = ( (*a) ^ b ) * 33;
+		break;
+        case 2: *a = ROTL32( *a, (r >> 16) % 32)  ^ b;
+		break;
+        case 3: *a = ROTR32( *a, (r >> 16) % 32)  ^ b;
+        }
+}
+// Random math between two input values
+static void math(int *d, int a, int b, uint32_t r)
+{
+        switch (r % 11)
+        {
+        case 0:  *d = a + b; break;
+        case 1:  *d = a  * b; break;
+        case 2:  *d = mul_hi(a, b); break;
+        case 3:  *d = min(a, b ); break;
+        case 4:  *d = ROTL32(a, b); break;
+        case 5:  *d = ROTR32(a, b); break;
+        case 6:  *d = a & b; break;
+        case 7:  *d = a | b; break;
+        case 8:  *d = a ^ b; break;
+        case 9:  *d = clz(a) + clz(b); break;
+        case 10:  *d = popcount(a) + popcount(b);
+        }    
+}
+
+static int mix_seq[PROGPOW_REGS];
+static int mix_seq_cnt = 0;
+static void progpow_getKern(uint64_t prog_seed) {
+    uint32_t seed0 = (uint32_t)prog_seed;
+    uint32_t seed1 = prog_seed >> 32;
+    uint32_t fnv_hash = 0x811c9dc5;
+    kiss99_t rnd_state;
+    rnd_state.z = fnv1a(fnv_hash, seed0);
+    rnd_state.w = fnv1a(fnv_hash, seed1);
+    rnd_state.jsr = fnv1a(fnv_hash, seed0);
+    rnd_state.jcong = fnv1a(fnv_hash, seed1);
+
+    // Create a random sequence of mix destinations
+    // Merge is a read-modify-write, guaranteeing every mix element is modified every loop
+    for (int i = 0; i < PROGPOW_REGS; i++)
+        mix_seq[i] = i;
+    for (int i = PROGPOW_REGS - 1; i > 0; i--)
+    {
+        int j = kiss99(rnd_state) % (i + 1);
+        swap(&mix_seq[i], &mix_seq[j]);
+    }	
+
+	for (int i = 0; (i < PROGPOW_CNT_CACHE) || (i < PROGPOW_CNT_MATH); i++)
+	{
+			if (i < PROGPOW_CNT_CACHE)
+			{
+				rnd();//offset = mix_src() % PROGPOW_CACHE_WORDS;
+				//data32 = c_dag[offset];
+				rnd();//merge(&(mix_dst()), data32, rnd());
+			}
+			if (i < PROGPOW_CNT_MATH)
+			{
+				rnd();rnd();rnd();//math(&data32, mix_src(), mix_src(), rnd());
+				rndd();//merge(&(mix_dst()), data32, rnd());
+			}
+	}
+	// Consume the global load data at the very end of the loop, to allow fully latency hiding
+	rnd(); // merge
+	rnd(); // merge(mix_dst,,rnd())	
+}
+
+static void progPowLoop(uint32_t PROGPOW_DAG_WORDS,
+    const uint32_t loop, uint32_t mix[PROGPOW_REGS],
+    const uint32_t c_dag[PROGPOW_CACHE_WORDS])
+{
+    uint32_t offset;
+    uint64_t data64;
+    uint32_t data32;
+	const uint32_t lane_id = threadIdx.x & (PROGPOW_LANES-1);
+	// global load
+	offset = __shfl_sync(0xFFFFFFFF, mix[0], loop%PROGPOW_LANES, PROGPOW_LANES);
+	offset %= PROGPOW_DAG_WORDS;
+	offset = offset * PROGPOW_LANES + lane_id;
+	node tmp; progpow_calculate_dag_item(&tmp, offset, light);
+	data64 = tmp.double_words[0]; //g_dag[offset];
+
+	for (int i = 0; (i < PROGPOW_CNT_CACHE) || (i < PROGPOW_CNT_MATH); i++)
+	{
+			if (i < PROGPOW_CNT_CACHE)
+			{
+					offset = mix_src() % PROGPOW_CACHE_WORDS;
+					data32 = c_dag[offset];
+					merge(&(mix_dst()), data32, RND());
+			}
+			if (i < PROGPOW_CNT_MATH)
+			{
+					math(&data32, mix_src(), mix_src(), RND());
+					merge(&(mix_dst()), data32, RND());
+			}
+	}
+	// Consume the global load data at the very end of the loop, to allow fully latency hiding
+	merge(&mix[0], data64, RND());
+	merge(&(mix_dst()), (data64>>32), RND());
+
+	// clear internl index
+	rnd_index = 0;
+	mix_seq_cnt = 0;
+}
+
+static void
+progpow_search(
+	ethash_return_value_t* ret,	
+    uint64_t start_nonce,
+    const hash32_t header
+    )
+{
+    uint32_t c_dag[PROGPOW_CACHE_WORDS];
+    uint32_t const gid = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t const nonce = start_nonce + gid;
+
+    const uint32_t lane_id = threadIdx.x & (PROGPOW_LANES - 1);
+
+    // Load random data into the cache
+    // TODO: should be a new blob of data, not existing DAG data
+    for (uint32_t word = threadIdx.x*2; word < PROGPOW_CACHE_WORDS; word += blockDim.x*2)
+    {
+		node tmp_node;
+		progpow_calculate_dag_item(&tmp_node, word, light);				
+        uint64_t data = tmp_node.double_words[0]; //g_dag[word];
+        c_dag[word + 0] = data;
+        c_dag[word + 1] = data >> 32;
+    }
+
+    uint4 result;
+    result.x = result.y = result.z = result.w = 0;
+    // keccak(header..nonce)
+    uint64_t seed = keccak_f800(header, nonce, result);
+
+    //__syncthreads();
+
+    #pragma unroll 1
+    for (uint32_t h = 0; h < PROGPOW_LANES; h++)
+    {
+        uint32_t mix[PROGPOW_REGS];
+
+        // share the hash's seed across all lanes
+        uint64_t hash_seed = __shfl_sync(0xFFFFFFFF, seed, h, PROGPOW_LANES);
+        // initialize mix for all lanes
+        fill_mix(hash_seed, lane_id, mix);
+
+        #pragma unroll 1
+        for (uint32_t l = 0; l < PROGPOW_CNT_MEM; l++)
+            progPowLoop(l, mix, PROGPOW_DAG_WORDS, c_dag);
+
+        // Reduce mix data to a single per-lane result
+        uint32_t mix_hash = 0x811c9dc5;
+        #pragma unroll
+        for (int i = 0; i < PROGPOW_REGS; i++)
+            fnv1a(mix_hash, mix[i]);
+
+        // Reduce all lanes to a single 128-bit result
+        uint4 result_hash;
+        result_hash.x = result_hash.y = result_hash.z = result_hash.w = 0x811c9dc5;
+        #pragma unroll
+        for (int i = 0; i < PROGPOW_LANES; i += 4)
+        {
+            fnv1a(result_hash.x, __shfl_sync(0xFFFFFFFF, mix_hash, i + 0, PROGPOW_LANES));
+            fnv1a(result_hash.y, __shfl_sync(0xFFFFFFFF, mix_hash, i + 1, PROGPOW_LANES));
+            fnv1a(result_hash.z, __shfl_sync(0xFFFFFFFF, mix_hash, i + 2, PROGPOW_LANES));
+            fnv1a(result_hash.w, __shfl_sync(0xFFFFFFFF, mix_hash, i + 3, PROGPOW_LANES));
+        }
+        if (h == lane_id)
+            result = result_hash;
+    }
+
+    keccak_f800(header, seed, result);
+	memcpy(&ret->result, &result, sizeof(result));
+}
+
+static bool progpow_hash(
+	ethash_return_value_t* ret,
+	node const* full_nodes,
+	ethash_light_t const light,
+	uint64_t full_size,
+	ethash_h256_t const header_hash,
+	uint64_t const nonce
+)
+{
+	hash32_t *header = (hash32_t*)&header_hash;
+	progpow_search(ret, nonce, *header);
+
+	return true;
+}
+
+
 ethash_h256_t ethash_get_seedhash(uint64_t block_number)
 {
 	ethash_h256_t ret;
@@ -275,7 +537,8 @@ ethash_return_value_t ethash_light_compute_internal(
 {
   	ethash_return_value_t ret;
 	ret.success = true;
-	if (!ethash_hash(&ret, NULL, light, full_size, header_hash, nonce)) {
+	//if (!ethash_hash(&ret, NULL, light, full_size, header_hash, nonce)) {
+	if (!progpow_hash(&ret, NULL, light, full_size, header_hash, nonce)) {
 		ret.success = false;
 	}
 	return ret;
