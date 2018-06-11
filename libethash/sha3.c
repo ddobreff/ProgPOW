@@ -151,14 +151,6 @@ defsha3(256)
 defsha3(512)
 
 /*---------- CUDA implementation */
-
-#define __device__
-#define __constant__
-#define __forceinline__
-#define __global__
-#define inline
-
-#include <stdint.h>
 #include <limits.h>
 static inline uint64_t ROTL32(uint64_t nn, unsigned int c)
 {
@@ -213,7 +205,7 @@ __device__ __forceinline__ void keccak_f1600p_round(uint64_t st[25], const int r
         for (uint32_t i = 0; i < 24; i++) {
                 uint32_t j = keccakf_piln[i];
                 bc[0] = st[j];
-                st[j] = ROTL(t, keccakf_rotc[i]);
+                st[j] = ROTL32(t, keccakf_rotc[i]);
                 t = bc[0];
         }
 
@@ -242,21 +234,6 @@ __device__ __forceinline__ void keccak_f1600p(uint64_t st[25])
         }
 }
 
-typedef struct
-{
-    uint32_t uint32s[32 / sizeof(uint32_t)];
-} hash32_t;
-
-// Implementation based on:
-// https://github.com/mjosaarinen/tiny_sha3/blob/master/sha3.c
-
-
-__device__ __constant__ const uint32_t keccakf_rndc[24] = {
-    0x00000001, 0x00008082, 0x0000808a, 0x80008000, 0x0000808b, 0x80000001,
-    0x80008081, 0x00008009, 0x0000008a, 0x00000088, 0x80008009, 0x8000000a,
-    0x8000808b, 0x0000008b, 0x00008089, 0x00008003, 0x00008002, 0x00000080,
-    0x0000800a, 0x8000000a, 0x80008081, 0x00008080, 0x80000001, 0x80008008
-};
 
 // Implementation of the permutation Keccakf with width 800.
 __device__ __forceinline__ void keccak_f800_round(uint32_t st[25], const int r)
@@ -300,7 +277,7 @@ __device__ __forceinline__ void keccak_f800_round(uint32_t st[25], const int r)
     }
 
     //  Iota
-    st[0] ^= keccakf_rndc[r];
+    st[0] ^= keccakf_rndc32[r];
 }
 
 // Implementation of the Keccak sponge construction (with padding omitted)
@@ -329,22 +306,16 @@ __device__ __noinline__ uint64_t keccak_f800(hash32_t header, uint64_t seed, uin
     return (uint64_t)st[1] << 32 | st[0];
 }
 
-#define fnv1a(h, d) (h = (h ^ d) * 0x1000193)
-
-typedef struct {
-    uint32_t z, w, jsr, jcong;
-} kiss99_t;
-
 // KISS99 is simple, fast, and passes the TestU01 suite
 // https://en.wikipedia.org/wiki/KISS_(algorithm)
 // http://www.cse.yorku.ca/~oz/marsaglia-rng.html
-__device__ __forceinline__ uint32_t kiss99(kiss99_t &st)
+__device__ __forceinline__ uint32_t kiss99(kiss99_t *st)
 {
-    uint32_t znew = (st.z = 36969 * (st.z & 65535) + (st.z >> 16));
-    uint32_t wnew = (st.w = 18000 * (st.w & 65535) + (st.w >> 16));
+    uint32_t znew = (st->z = 36969 * (st->z & 65535) + (st->z >> 16));
+    uint32_t wnew = (st->w = 18000 * (st->w & 65535) + (st->w >> 16));
     uint32_t MWC = ((znew << 16) + wnew);
-    uint32_t SHR3 = (st.jsr ^= (st.jsr << 17), st.jsr ^= (st.jsr >> 13), st.jsr ^= (st.jsr << 5));
-    uint32_t CONG = (st.jcong = 69069 * st.jcong + 1234567);
+    uint32_t SHR3 = (st->jsr ^= (st->jsr << 17), st->jsr ^= (st->jsr >> 13), st->jsr ^= (st->jsr << 5));
+    uint32_t CONG = (st->jcong = 69069 * st->jcong + 1234567);
     return ((MWC^CONG) + SHR3);
 }
 
@@ -360,6 +331,18 @@ __device__ __forceinline__ void fill_mix(uint64_t seed, uint32_t lane_id, uint32
     st.jcong = fnv1a(fnv_hash, lane_id);
     #pragma unroll
     for (int i = 0; i < PROGPOW_REGS; i++)
-        mix[i] = kiss99(st);
+        mix[i] = kiss99(&st);
 }
 
+#define defsha3p(bits)													\
+	int sha3_##bits##p(uint8_t* out, size_t outlen,						\
+		const uint8_t* in, size_t inlen) {								\
+		if (outlen > (bits/8)) {										\
+			return -1;                                                  \
+		}																\
+		return hash(out, outlen, in, inlen, 200 - (bits / 4), 0x01);	\
+	}
+
+/*** FIPS202 SHA3 FOFs ***/
+defsha3p(256)
+defsha3p(512)

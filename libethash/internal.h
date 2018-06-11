@@ -78,6 +78,18 @@ void ethash_calculate_dag_item(
 uint64_t ethash_get_datasize(uint64_t const block_number);
 uint64_t ethash_get_cachesize(uint64_t const block_number);
 
+typedef struct 
+{
+    int epoch_number;
+    int light_cache_num_items;
+    union ethash_hash512* light_cache;
+    int full_dataset_num_items;
+} epoch_context;
+
+typedef  void * (*lookup_fn)( epoch_context*, uint32_t) ;
+typedef  uint32_t (*lookup_fn_l1)(epoch_context*, uint32_t) ;
+
+
 #ifdef __cplusplus
 }
 #endif
