@@ -45,7 +45,7 @@ uint64_t ethash_get_cachesize(uint64_t const block_number)
 // Follows Sergio's "STRICT MEMORY HARD HASHING FUNCTIONS" (2014)
 // https://bitslog.files.wordpress.com/2013/12/memohash-v0-3.pdf
 // SeqMemoHash(s, R, N)
-bool static ethash_compute_cache_nodes(
+static bool ethash_compute_cache_nodes(
 	node* const nodes,
 	uint64_t cache_size,
 	ethash_h256_t const* seed
@@ -192,10 +192,10 @@ static bool ethash_hash(
 
 		for (unsigned n = 0; n != MIX_NODES; ++n) {
 			node const* dag_node;
+			node tmp_node;
 			if (full_nodes) {
 				dag_node = &full_nodes[MIX_NODES * index + n];
 			} else {
-				node tmp_node;
 				ethash_calculate_dag_item(&tmp_node, index * MIX_NODES + n, light);
 				dag_node = &tmp_node;
 			}
@@ -241,25 +241,18 @@ static bool ethash_hash(
 
 // manual compilation of getKern, progpowLoop
 
-// Helper to get the next value in the per-program random sequence
-#define rnd()    (kiss99(&prog_rnd))
-// Helper to pick a random mix location
-#define mix_src() (rnd() % PROGPOW_REGS)
-// Helper to access the sequence of mix destinations
-#define mix_dst() (mix_seq[(mix_seq_cnt++)%PROGPOW_REGS])
 
 
-static void swap(int *a, int *b) {
-    int t = *a;
-    *a = *b;
-    *b = t;
-}
+#define PROGPOW_LANES			32
+#define PROGPOW_REGS			16
+#define PROGPOW_CNT_MEM			64
+#define PROGPOW_CNT_MATH		8
+#define PROGPOW_CACHE_WORDS  4096
 
 #define ROTL(x,n,w) (((x) << (n)) | ((x) >> ((w) - (n))))
 #define ROTL32(x,n) ROTL(x,n,32)        /* 32 bits word */
 
 #define ROTR(x,n,w) (((x) >> (n)) | ((x) << ((w) - (n))))
-
 #define ROTR32(x,n) ROTR(x,n,32)        /* 32 bits word */
 
 #define min_(a,b) ((a<b) ? a : b)
@@ -289,13 +282,19 @@ uint32_t popcount(uint32_t a) {
         return result;
 }
 
-#define fnv(a,b) fnv_hash(a,b)
+static void swap(int *a, int *b) {
+    int t = *a;
+    *a = *b;
+    *b = t;
+}
 
-#define PROGPOW_LANES			32
-#define PROGPOW_REGS			16
-#define PROGPOW_CNT_MEM			64
-#define PROGPOW_CNT_MATH		8
-#define PROGPOW_CACHE_WORDS  4096
+#define fnv(a,b) fnv_hash(a,b)
+static uint8_t* keccak512(hash512* a) {
+	SHA3_512((uint8_t*)a,(uint8_t*)a,64);
+	return a;
+}
+
+
 
 // Merge new data from b into the value in a
 // Assuming A has high entropy only do ops that retain entropy, even if B is low entropy
@@ -313,6 +312,7 @@ static void merge(int *a, int b, uint32_t r)
         case 3: *a = ROTR32( *a, (r >> 16) % 32)  ^ b;
         }
 }
+
 // Random math between two input values
 static uint32_t math(uint32_t a, uint32_t b, uint32_t r)
 {
@@ -333,6 +333,13 @@ static uint32_t math(uint32_t a, uint32_t b, uint32_t r)
         }
         return 0;
 }
+
+// Helper to get the next value in the per-program random sequence
+#define rnd()    (kiss99(&prog_rnd))
+// Helper to pick a random mix location
+#define mix_src() (rnd() % PROGPOW_REGS)
+// Helper to access the sequence of mix destinations
+#define mix_dst() (mix_seq[(mix_seq_cnt++)%PROGPOW_REGS])
 
 kiss99_t progPowInit(uint64_t prog_seed, uint32_t mix_seq[PROGPOW_REGS])
 {
@@ -414,13 +421,78 @@ static void progPowLoop(
     }
 }
 
+static void
+progpow_search(	ethash_return_value_t* ret,	
+ const epoch_context* context, const uint64_t seed, lookup_fn g_lut, lookup_fn_l1 c_lut
+    )
+{
+    uint32_t mix[PROGPOW_LANES][PROGPOW_REGS];
+    hash256 result;
+    for (int i = 0; i < 8; i++)
+        result.hwords[i] = 0;
+
+    // initialize mix for all lanes
+    for (uint32_t l = 0; l < PROGPOW_LANES; l++)
+        fill_mix(seed, l, mix[l]);
+
+    //uint32_t dagWords = (unsigned)(full_size / ETHASH_MIX_BYTES_256);
+    // execute the randomly generated inner loop
+    for (uint32_t i = 0; i < PROGPOW_CNT_MEM; i++)
+    {
+        progPowLoop(context, seed, i, mix, g_lut, c_lut);
+    }
+
+
+    // Reduce mix data to a single per-lane result
+    uint32_t lane_hash[PROGPOW_LANES];
+    for (int l = 0; l < PROGPOW_LANES; l++)
+    {
+        lane_hash[l] = 0x811c9dc5;
+        for (int i = 0; i < PROGPOW_REGS; i++)
+            fnv1a(&lane_hash[l], mix[l][i]);
+    }
+    // Reduce all lanes to a single 128-bit result
+    for (int i = 0; i < 4; i++)
+        result.hwords[i] = 0x811c9dc5;
+    for (int l = 0; l < PROGPOW_LANES; l++)
+        fnv1a(&result.hwords[l % 4], lane_hash[l]);
+
+	memcpy(&ret->result, &result, sizeof(result));
+}
+
+static hash32 calculate_L1dataset_item(const epoch_context* context, uint32_t index);
+static hash2048_t* calculate_dataset_item_progpow(hash2048_t* r,
+   const epoch_context* context, uint32_t index);
+
+static bool progpow_hash(
+	ethash_return_value_t* ret,
+	node const* full_nodes,
+	ethash_light_t const light,
+	uint64_t full_size,
+	ethash_h256_t const header_hash,
+	uint64_t const nonce
+)
+{
+	epoch_context ctx;
+	ctx.light_cache_num_items = light->cache_size;
+	ctx.full_dataset_num_items = full_size;
+	ctx.light_cache = light->cache;
+	ctx.epoch_number = light->block_number;
+
+	progpow_search(ret, &ctx, nonce, calculate_dataset_item_progpow, calculate_L1dataset_item);
+
+	return true;
+}
+
+
+
 #define full_dataset_item_parents ETHASH_DATASET_PARENTS
 
 /// Calculates a full l1 dataset item
 ///
 /// This consist of one 32-bit items produced by calculate_dataset_item_partial().
 /// Here the computation is done interleaved for better performance.
-hash32 calculate_L1dataset_item(const epoch_context* context, uint32_t index)
+static hash32 calculate_L1dataset_item(const epoch_context* context, uint32_t index)
 {
     const hash512* const cache = context->light_cache;
 
@@ -436,7 +508,7 @@ hash32 calculate_L1dataset_item(const epoch_context* context, uint32_t index)
     mix0.half_words[0] ^= fix_endianness(init0);
 
     // Hash and convert to little-endian 32-bit words.
-    fix_endianness32(keccak512(mix0));
+    fix_endianness32(keccak512(&mix0));
 
     for (uint32_t j = 0; j < full_dataset_item_parents; ++j)
     {
@@ -458,7 +530,7 @@ hash32 calculate_L1dataset_item(const epoch_context* context, uint32_t index)
 ///
 /// This consist of four 512-bit items produced by calculate_dataset_item_partial().
 /// Here the computation is done interleaved for better performance.
-hash2048_t* calculate_dataset_item_progpow(hash2048_t* r,
+static hash2048_t* calculate_dataset_item_progpow(hash2048_t* r,
    const epoch_context* context, uint32_t index)
 {
     const hash512* const cache = context->light_cache;
@@ -523,62 +595,6 @@ hash2048_t* calculate_dataset_item_progpow(hash2048_t* r,
     return r;
 }
 
-static void
-progpow_search(	ethash_return_value_t* ret,	
- const epoch_context* context, const uint64_t seed, lookup_fn g_lut, lookup_fn_l1 c_lut
-    )
-{
-    uint32_t mix[PROGPOW_LANES][PROGPOW_REGS];
-    hash256 result;
-    for (int i = 0; i < 8; i++)
-        result.hwords[i] = 0;
-
-    // initialize mix for all lanes
-    for (uint32_t l = 0; l < PROGPOW_LANES; l++)
-        fill_mix(seed, l, mix[l]);
-
-    // execute the randomly generated inner loop
-    for (uint32_t i = 0; i < PROGPOW_CNT_MEM; i++)
-    {
-        progPowLoop(context, (uint64_t)context->epoch_number, i, mix, g_lut, c_lut);
-    }
-
-    // Reduce mix data to a single per-lane result
-    uint32_t lane_hash[PROGPOW_LANES];
-    for (int l = 0; l < PROGPOW_LANES; l++)
-    {
-        lane_hash[l] = 0x811c9dc5;
-        for (int i = 0; i < PROGPOW_REGS; i++)
-            fnv1a(&lane_hash[l], mix[l][i]);
-    }
-    // Reduce all lanes to a single 128-bit result
-    for (int i = 0; i < 4; i++)
-        result.hwords[i] = 0x811c9dc5;
-    for (int l = 0; l < PROGPOW_LANES; l++)
-        fnv1a(&result.hwords[l % 4], lane_hash[l]);
-
-	memcpy(&ret->result, &result, sizeof(result));
-}
-
-static bool progpow_hash(
-	ethash_return_value_t* ret,
-	node const* full_nodes,
-	ethash_light_t const light,
-	uint64_t full_size,
-	ethash_h256_t const header_hash,
-	uint64_t const nonce
-)
-{
-	epoch_context ctx;
-	ctx.full_dataset_num_items = full_size;
-	ctx.light_cache = light;
-	ctx.epoch_number = nonce;
-
-	progpow_search(&ctx, ret, nonce, calculate_dataset_item_progpow, calculate_L1dataset_item);
-
-	return true;
-}
-
 
 ethash_h256_t ethash_get_seedhash(uint64_t block_number)
 {
@@ -636,15 +652,20 @@ ethash_return_value_t ethash_light_compute_internal(
 	ethash_light_t light,
 	uint64_t full_size,
 	ethash_h256_t const header_hash,
-	uint64_t nonce
+	uint64_t nonce, uint64_t blockNumber
 )
 {
   	ethash_return_value_t ret;
 	ret.success = true;
-	//if (!ethash_hash(&ret, NULL, light, full_size, header_hash, nonce)) {
+if (blockNumber < 4000000) {
+	if (!ethash_hash(&ret, NULL, light, full_size, header_hash, nonce)) {
+		ret.success = false;
+	}
+} else {
 	if (!progpow_hash(&ret, NULL, light, full_size, header_hash, nonce)) {
 		ret.success = false;
 	}
+}
 	return ret;
 }
 
@@ -655,5 +676,6 @@ ethash_return_value_t ethash_light_compute(
 )
 {
 	uint64_t full_size = ethash_get_datasize(light->block_number);
-	return ethash_light_compute_internal(light, full_size, header_hash, nonce);
+	return ethash_light_compute_internal(light, full_size, header_hash, nonce,
+               light->block_number);
 }
