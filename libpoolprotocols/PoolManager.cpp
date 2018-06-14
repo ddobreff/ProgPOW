@@ -182,7 +182,7 @@ void PoolManager::start()
 		p_client->connect();
 	}
 	else {
-		cwarn << "Manager has no connections defined!";
+		cwarn << "start: Manager has no connections defined!";
 	}
 }
 

@@ -11,6 +11,7 @@ set(FILES
 	data_sizes.h
 	sha3.c
 	sha3.h
+	keccakf800.c
 )
 
 add_library(ethash ${FILES})

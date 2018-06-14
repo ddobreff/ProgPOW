@@ -86,7 +86,7 @@ typedef struct
     int full_dataset_num_items;
 } epoch_context;
 
-typedef  void * (*lookup_fn)( epoch_context*, uint32_t) ;
+typedef  void * (*lookup_fn2)( epoch_context*, uint32_t) ;
 typedef  uint32_t (*lookup_fn_l1)(epoch_context*, uint32_t) ;
 
 

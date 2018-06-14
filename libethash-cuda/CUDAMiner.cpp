@@ -122,6 +122,7 @@ void CUDAMiner::workLoop()
 				current = w;
 			}
 			uint64_t upper64OfBoundary = (uint64_t)(u64)((u256)current.boundary >> 192);
+			cnote << "upper64 boundary " << upper64OfBoundary;
 			uint64_t startN = current.startNonce;
 			if (current.exSizeBits >= 0)
 			{
@@ -638,6 +639,7 @@ void CUDAMiner::search(
                         farm.submitProof(Solution{nonces[i], mixes[i], w, m_new_work});
                     else
                     {
+						cnote<<w.epoch<<w.header<<nonces[i];
                         Result r = EthashAux::eval(w.epoch, w.header, nonces[i]);
                         if (r.value < w.boundary)
                             farm.submitProof(Solution{nonces[i], r.mixHash, w, m_new_work});

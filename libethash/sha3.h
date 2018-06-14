@@ -94,18 +94,20 @@ static const uint32_t keccakf_rndc32[24] = {
 #define decsha3p(bits) \
 	int sha3_##bits##p(uint8_t*, size_t, uint8_t const*, size_t);
 
-decsha3p(256);
+//decsha3p(256);
 decsha3p(512);
 
+/*
 static inline void SHA3_256p(struct ethash_h256 const* ret, uint8_t const* data, size_t const size)
 {
 	sha3_256p((uint8_t*)ret, 32, data, size);
 }
-
+*/
 static inline void SHA3_512p(uint8_t* ret, uint8_t const* data, size_t const size)
 {
 	sha3_512p(ret, 64, data, size);
 }
+
 
 #define ROTL(x,n,w) (((x) << (n)) | ((x) >> ((w) - (n))))
 static uint32_t fnv1a(uint32_t *h, uint32_t d)
