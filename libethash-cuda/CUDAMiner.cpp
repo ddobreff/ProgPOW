@@ -632,6 +632,8 @@ void CUDAMiner::search(
 			args, 0));          // arguments
 		if (m_current_index >= s_numStreams)
 		{
+			//cnote<<"test "<<w.epoch<<" "<<w.header<<" "<<m_current_index;
+			//EthashAux::eval(w.epoch, w.header, m_current_index);
             if (found_count)
             {
                 for (uint32_t i = 0; i < found_count; i++)

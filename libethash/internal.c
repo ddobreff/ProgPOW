@@ -57,6 +57,11 @@ uint32_t kiss99(kiss99_t * st)
     return ((MWC^CONG) + SHR3);
 }
 
+uint32_t fnv1a(uint32_t *h, uint32_t d)
+{
+        return *h = (*h ^ d) * 0x1000193;
+}
+
 void fill_mix(
 	uint64_t seed,
 	uint32_t lane_id,
@@ -457,14 +462,14 @@ static hash2048_t* calculate_dataset_item_progpow(hash2048_t* r,
     return r;
 }
 
-void keccak_f800(uint32_t* out, const hash256 header, const uint64_t seed, const uint32_t *result)
+void keccak_f800(uint32_t* out, const hash256* header, const uint64_t seed, const uint32_t *result)
 {
     uint32_t st[25];
 
     for (int i = 0; i < 25; i++)
         st[i] = 0;
     for (int i = 0; i < 8; i++)
-        st[i] = header.hwords[i];
+        st[i] = header->hwords[i];
     st[8] = (uint32_t)seed;
     st[9] = (uint32_t)(seed >> 32);
     st[10] = result[0];
@@ -481,7 +486,6 @@ void keccak_f800(uint32_t* out, const hash256 header, const uint64_t seed, const
     for (int i = 0; i < 8; ++i)
         out[i] = st[i];
 }
-
 
 kiss99_t progPowInit(uint64_t prog_seed, uint32_t mix_seq[PROGPOW_REGS])
 {
@@ -517,13 +521,14 @@ static void progPowLoop(
     // Global offset uses mix[0] to guarantee it depends on the load result
     uint32_t offset_g = mix[loop%PROGPOW_LANES][0] % (uint32_t)context->full_dataset_num_items;
 	
-    const hash2048_t* data256 = fix_endianness32((hash2048_t*)g_lut(context, offset_g));
+    const hash2048_t data256;
+    fix_endianness32((hash2048_t*)g_lut(&data256, context, offset_g));
 
     // Lanes can execute in parallel and will be convergent
     for (uint32_t l = 0; l < PROGPOW_LANES; l++)
     {
         // global load to sequential locations
-        uint64_t data64 = data256->words[l];
+        uint64_t data64 = data256.words[l];
 
         // initialize the seed and mix destination sequence
         uint32_t mix_seq[PROGPOW_REGS];
@@ -602,27 +607,26 @@ static hash32 calculate_L1dataset_item(const epoch_context* context, uint32_t in
 static hash2048_t* calculate_dataset_item_progpow(hash2048_t* r,
    const epoch_context* context, uint32_t index);
 
-static bool progpow_hash(
+bool progpow_hash(
 	ethash_return_value_t* ret,
-	node const* full_nodes,
-	ethash_light_t const light,
-	uint64_t full_size,
-	ethash_h256_t const header_hash,
+	const epoch_context *ctx,
+    const void *header_hash,
 	uint64_t const nonce
 )
 {
-	epoch_context ctx;
-	ctx.light_cache_num_items = light->cache_size;
-	ctx.full_dataset_num_items = full_size;
-	ctx.light_cache = light->cache;
-	ctx.epoch_number = light->block_number;
+    uint32_t result[4];
+    for (int i = 0; i < 4; i++)
+        result[i] = 0;
+    uint32_t seed;
+    keccak_f800(&seed, header_hash, nonce, result);
 
-	progpow_search(ret, &ctx, nonce, calculate_dataset_item_progpow, calculate_L1dataset_item);
+	progpow_search(ret, ctx, seed, calculate_dataset_item_progpow, calculate_L1dataset_item);
+
+    hash256 hash;
+    keccak_f800(&hash.hwords, header_hash, seed, ret->mix_hash.b);
 
 	return true;
 }
-
-
 
 #define full_dataset_item_parents ETHASH_DATASET_PARENTS
 
@@ -688,12 +692,13 @@ ethash_return_value_t ethash_light_compute_internal(
 {
   	ethash_return_value_t ret;
 	ret.success = true;
-if (blockNumber < 4000000) {
+if (blockNumber < 4) {
 	if (!ethash_hash(&ret, NULL, light, full_size, header_hash, nonce)) {
 		ret.success = false;
 	}
 } else {
-	if (!progpow_hash(&ret, NULL, light, full_size, header_hash, nonce)) {
+    if (1) {
+	//if (!progpow_hash(&ret, NULL, light, full_size, header_hash, nonce)) {
 		ret.success = false;
 	}
 }

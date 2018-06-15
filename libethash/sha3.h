@@ -34,15 +34,6 @@ static inline void SHA3_512(uint8_t* ret, uint8_t const* data, size_t const size
 #define inline
 #define __noinline__
 
-#define ETHASH_ACCESSES 4
-
-#define PROGPOW_LANES			32
-#define PROGPOW_REGS			16
-#define PROGPOW_CACHE_BYTES		(16*1024)
-#define PROGPOW_CNT_MEM			ETHASH_ACCESSES
-#define PROGPOW_CNT_CACHE		8
-#define PROGPOW_CNT_MATH		
-
 typedef struct
 {
     uint32_t uint32s[32 / sizeof(uint32_t)];
@@ -94,26 +85,15 @@ static const uint32_t keccakf_rndc32[24] = {
 #define decsha3p(bits) \
 	int sha3_##bits##p(uint8_t*, size_t, uint8_t const*, size_t);
 
-//decsha3p(256);
+
 decsha3p(512);
 
-/*
-static inline void SHA3_256p(struct ethash_h256 const* ret, uint8_t const* data, size_t const size)
-{
-	sha3_256p((uint8_t*)ret, 32, data, size);
-}
-*/
+
 static inline void SHA3_512p(uint8_t* ret, uint8_t const* data, size_t const size)
 {
 	sha3_512p(ret, 64, data, size);
 }
 
-
-#define ROTL(x,n,w) (((x) << (n)) | ((x) >> ((w) - (n))))
-static uint32_t fnv1a(uint32_t *h, uint32_t d)
-{
-        return *h = (*h ^ d) * 0x1000193;
-}
 
 #ifdef __cplusplus
 }

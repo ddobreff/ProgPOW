@@ -32,7 +32,7 @@
 #define ETHASH_CACHE_BYTES_INIT 1073741824U // 2**24
 #define ETHASH_CACHE_BYTES_GROWTH 131072U  // 2**17
 #define ETHASH_EPOCH_LENGTH 30000U
-#define ETHASH_MIX_BYTES 128
+#define ETHASH_MIX_BYTES 256
 #define ETHASH_MIX_BYTES_256 256
 #define ETHASH_HASH_BYTES 64
 #define ETHASH_DATASET_PARENTS 256
@@ -86,6 +86,14 @@ ethash_return_value_t ethash_light_compute(
  * Calculate the seedhash for a given block number
  */
 ethash_h256_t ethash_get_seedhash(uint64_t block_number);
+
+typedef struct 
+{
+    int epoch_number;
+    int light_cache_num_items;
+    union ethash_hash512* light_cache;
+    int full_dataset_num_items;
+} epoch_context;
 
 #ifdef __cplusplus
 }

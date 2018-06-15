@@ -69,11 +69,20 @@ EthashAux::LightType EthashAux::light(int epoch)
     return (ethash.m_lights[epoch] = make_shared<LightAllocation>(epoch));
 }
 
+extern const uint64_t dag_sizes[2048];
+extern epoch_context g_context;
+
+typedef struct {uint8_t b[256];}hash2048_256;
 EthashAux::LightAllocation::LightAllocation(int epoch)
 {
     int blockNumber = epoch * ETHASH_EPOCH_LENGTH;
     light = ethash_light_new(blockNumber);
     size = ethash_get_cachesize(blockNumber);
+    epoch_context& context = g_context;
+    context.epoch_number = epoch;
+    context.light_cache_num_items = size/sizeof(node);
+    context.light_cache = (ethash_hash512*)light->cache;
+    context.full_dataset_num_items = dag_sizes[epoch]/sizeof(hash2048_256);
 }
 
 EthashAux::LightAllocation::~LightAllocation()
@@ -86,9 +95,14 @@ bytesConstRef EthashAux::LightAllocation::data() const
 	return bytesConstRef((byte const*)light->cache, size);
 }
 
+
 Result EthashAux::LightAllocation::compute(h256 const& _headerHash, uint64_t _nonce) const
 {
-	ethash_return_value r = ethash_light_compute(light, *(ethash_h256_t*)_headerHash.data(), _nonce);
+	ethash_return_value r;// = ethash_light_compute(light, *(ethash_h256_t*)_headerHash.data(), _nonce);
+
+    if (!progpow_hash(&r, &g_context, &_headerHash, _nonce)) {
+		r.success = false;
+	}
 	if (!r.success)
 		BOOST_THROW_EXCEPTION(DAGCreationFailure());
 	return Result{h256((uint8_t*)&r.result, h256::ConstructFromPointer), h256((uint8_t*)&r.mix_hash, h256::ConstructFromPointer)};
@@ -97,7 +111,7 @@ Result EthashAux::LightAllocation::compute(h256 const& _headerHash, uint64_t _no
 Result EthashAux::eval(int epoch, h256 const& _headerHash, uint64_t _nonce) noexcept
 {
 	try
-	{
+	{   
 		return get().light(epoch)->compute(_headerHash, _nonce);
 	}
 	catch(...)

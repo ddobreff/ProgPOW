@@ -45,6 +45,7 @@ public:
 		Result compute(h256 const& _headerHash, uint64_t _nonce) const;
 		ethash_light_t light;
 		uint64_t size;
+		static epoch_context context;
 	};
 
 	using LightType = std::shared_ptr<LightAllocation>;

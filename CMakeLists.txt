@@ -40,6 +40,8 @@ option(ETHASHCUDA "Build with CUDA mining" OFF)
 option(ETHDBUS "Build with D-Bus support" OFF)
 option(APICORE "Build with API Server support" ON)
 
+add_definitions(-g)
+
 # propagates CMake configuration options to the compiler
 function(configureProject)
 	if (ETHASHCL)
