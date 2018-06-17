@@ -84,7 +84,7 @@ __device__ __noinline__ uint64_t keccak_f800(hash32_t header, uint64_t seed, has
         st[i] = header.uint32s[i];
     st[8] = seed;
     st[9] = seed >> 32;
-    for (int i = 0; i < 8; i++)
+    for (int i = 0; i < 4; i++)
         st[10+i] = result.uint32s[i];
 
     for (int r = 0; r < 21; r++) {
@@ -155,7 +155,7 @@ progpow_search(
     }
 
     hash32_t result;
-    for (int i = 0; i < 8; i++)
+    for (int i = 0; i < 4; i++)
         result.uint32s[i] = 0;
     // keccak(header..nonce)
     uint64_t seed = keccak_f800(header, nonce, result);

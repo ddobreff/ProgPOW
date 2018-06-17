@@ -417,8 +417,8 @@ static hash2048_t* calculate_dataset_item_progpow(hash2048_t* r,
 
     hash512 mix0 = cache[index0 % num_cache_items];
     hash512 mix1 = cache[index1 % num_cache_items];
-    hash512 mix2 = cache[index0 % num_cache_items];
-    hash512 mix3 = cache[index1 % num_cache_items];
+    hash512 mix2 = cache[index2 % num_cache_items];
+    hash512 mix3 = cache[index3 % num_cache_items];
 
     mix0.half_words[0] ^= fix_endianness(init0);
     mix1.half_words[0] ^= fix_endianness(init1);

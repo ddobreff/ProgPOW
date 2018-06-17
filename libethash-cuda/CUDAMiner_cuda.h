@@ -35,6 +35,7 @@ typedef union {
 	uint32_t words[64 / sizeof(uint32_t)];
 	uint2	 uint2s[64 / sizeof(uint2)];
 	uint4	 uint4s[64 / sizeof(uint4)];
+	uint8_t  bytes[64];
 } hash64_t;
 
 typedef union {

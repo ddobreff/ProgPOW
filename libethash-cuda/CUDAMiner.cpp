@@ -26,6 +26,20 @@ using namespace std;
 using namespace dev;
 using namespace eth;
 
+template<typename Hash>
+inline std::string to_hex(const Hash& h)
+{
+    static const auto hex_chars = "0123456789abcdef";
+    std::string str;
+    str.reserve(sizeof(h) * 2);
+    for (auto b: h.bytes)
+    {
+        str.push_back(hex_chars[uint8_t(b) >> 4]);
+        str.push_back(hex_chars[uint8_t(b) & 0xf]);
+    }
+    return str;
+}
+
 unsigned CUDAMiner::s_numInstances = 0;
 
 vector<int> CUDAMiner::s_devices(MAX_MINERS, -1);
@@ -408,9 +422,37 @@ bool CUDAMiner::cuda_init(
 			if (!hostDAG)
 			{
 				if((m_device_num == dagCreateDevice) || !_cpyToHost){ //if !cpyToHost -> All devices shall generate their DAG
+					int gs = 1024;
 					cudalog << "Generating DAG for GPU #" << m_device_num <<
-							   " with dagBytes: " << dagBytes <<" gridSize: " << s_gridSize;
-					ethash_generate_dag(dag, dagBytes, light, lightWords, s_gridSize, s_blockSize, m_streams[0], m_device_num);
+							   " with dagBytes: " << dagBytes <<" gridSize: " << gs;
+					ethash_generate_dag(dag, dagBytes, light, lightWords, gs, 512, m_streams[0], m_device_num);
+					hash64_t d[2048];
+					CUDA_SAFE_CALL(cudaMemcpy(reinterpret_cast<void*>(d), dag, 2048*sizeof(hash64_t), cudaMemcpyDeviceToHost));
+					cudalog << _light->block_number/30000;
+					for (int k=0;k<124;k++)for (int i=0;i<4;i++) cudalog <<k<<" "<< to_hex(d[4*k+i]);
+					//cudalog << to_hex(*(hash64_t*)_lightData);
+
+/*
+cu 09:07:44 cuda-0   193 dag 64bytes x 4 = 2048
+00000000000000000000000000000000000000000000000000000000000000006cfd1da60000000061d7015b00000000cfcf92740000000032c90d0e00000000
+ethash generated first 64bytes of dag
+b28ed8191cb50bd8697a4c45e22b47edbc59983983dcab684d2eefb811c92e862a5aeaf06aefc6d962486b0acc7894c64f8b38f90c165c949cddf3c74ff62072
+
+cuda generated
+0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004f8b38f90c165c949cddf3c74ff62072
+ea1554fcbd4b8a6b17a0503750987abaab5d9a5cf4538f23a1627b93803964dcb1b8f43c87efc92b50df1ca2fcd9c7ac71cfafbd0fd3b914504cdd100f5990da
+c7dd1016b72802a5d7ff3dbbcf285c114ae36b1c150e6ed6962f8d114e77d8a7d70710900a57e7925481008fc8be7f3b6643bee23520116fe5765ca07981e1f0
+1e4a6ba32fc19ac3fe1da98b2ed9ce40c795c7d008bdd063d1be1ca4b0f7eadab049bea1c0907a0525a2bba875039839dce3ff73f4d7e159ae0b038e4bdca329
+
+00000000000000000000000000000000000000000000000000000000000000002a5aeaf06aefc6d962486b0acc7894c64f8b38f90c165c949cddf3c74ff62072
+ea1554fcbd4b8a6b17a0503750987abaab5d9a5cf4538f23a1627b93803964dcb1b8f43c87efc92b50df1ca2fcd9c7ac71cfafbd0fd3b914504cdd100f5990da
+c7dd1016b72802a5d7ff3dbbcf285c114ae36b1c150e6ed6962f8d114e77d8a7d70710900a57e7925481008fc8be7f3b6643bee23520116fe5765ca07981e1f0
+1e4a6ba32fc19ac3fe1da98b2ed9ce40c795c7d008bdd063d1be1ca4b0f7eadab049bea1c0907a0525a2bba875039839dce3ff73f4d7e159ae0b038e4bdca329
+ 
+
+b28ed8191cb50bd8697a4c45e22b47edbc59983983dcab684d2eefb811c92e862a5aeaf06aefc6d962486b0acc7894c64f8b38f90c165c949cddf3c74ff62072ea1554fcbd4b8a6b17a0503750987abaab5d9a5cf4538f23a1627b93803964dcb1b8f43c87efc92b50df1ca2fcd9c7ac71cfafbd0fd3b914504cdd100f5990da
+c7dd1016b72802a5d7ff3dbbcf285c114ae36b1c150e6ed6962f8d114e77d8a7d70710900a57e7925481008fc8be7f3b6643bee23520116fe5765ca07981e1f01e4a6ba32fc19ac3fe1da98b2ed9ce40c795c7d008bdd063d1be1ca4b0f7eadab049bea1c0907a0525a2bba875039839dce3ff73f4d7e159ae0b038e4bdca329
+*/
 					cudalog << "Finished DAG";
 
 					if (_cpyToHost)

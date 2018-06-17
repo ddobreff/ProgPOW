@@ -42,7 +42,7 @@ __device__ __forceinline__ void keccak_f1600_round(uint64_t st[25], const int r)
 		bc[i] = st[i] ^ st[i + 5] ^ st[i + 10] ^ st[i + 15] ^ st[i + 20];
 
 	for (int i = 0; i < 5; i++) {
-		t = bc[(i + 4) % 5] ^ ROTL32(bc[(i + 1) % 5], 1);
+		t = bc[(i + 4) % 5] ^ ROTL64(bc[(i + 1) % 5], 1);
 		for (uint32_t j = 0; j < 25; j += 5)
 			st[j + i] ^= t;
 	}
@@ -52,7 +52,7 @@ __device__ __forceinline__ void keccak_f1600_round(uint64_t st[25], const int r)
 	for (int i = 0; i < 24; i++) {
 		uint32_t j = keccakf_piln[i];
 		bc[0] = st[j];
-		st[j] = ROTL32(t, keccakf_rotc[i]);
+		st[j] = ROTL64(t, keccakf_rotc[i]);
 		t = bc[0];
 	}
 
