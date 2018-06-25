@@ -93,56 +93,33 @@ __device__ uint4 fnv4(uint4 a, uint4 b)
 	return c;
 }
 
-#define NODE_WORDS (ETHASH_HASH_BYTES/sizeof(uint32_t))
+#define NODE_WORDS (ETHASH_HASH_BYTES/sizeof(uint32_t)) // 64/4
 
 __global__ void
-ethash_calculate_dag_item(uint32_t start, hash64_t *g_dag, uint64_t dag_bytes, hash64_t* g_light, uint32_t light_words)
+ethash_calculate_dag_item(uint32_t start, hash64_t *g_dag, uint64_t dag_bytes,
+	 hash64_t* g_light, uint32_t light_words)
 {
 	uint64_t const node_index = start + blockIdx.x * blockDim.x + threadIdx.x;
-	if (node_index * sizeof(hash64_t) >= dag_bytes ) return;
+	if (node_index * sizeof(hash64_t) >= dag_bytes ) return; // 512 bit per half node
+	uint32_t init0 = (uint32_t)node_index;
 
-	hash200_t dag_node;
+	hash64_t dag_node;
 	for(int i=0; i<4; i++)
 		dag_node.uint4s[i] = g_light[node_index % light_words].uint4s[i];
-	dag_node.words[0] ^= node_index;
+	dag_node.words[0] ^= init0;
 	keccak_f1600(dag_node.uint64s);
-
-	const int thread_id = threadIdx.x & 3;
 
 	#pragma unroll
 	for (uint32_t i = 0; i < ETHASH_DATASET_PARENTS; ++i) {
-		uint32_t parent_index = fnv(node_index ^ i, dag_node.words[i % NODE_WORDS]) % light_words;
+		uint32_t parent_index = fnv(init0 ^ i, dag_node.words[i % NODE_WORDS]) % light_words;
 		for (uint32_t t = 0; t < 4; t++) {
-
-			uint32_t shuffle_index = __shfl_sync(0xFFFFFFFF,parent_index, t, 4);
-
-			uint4 p4 = g_light[shuffle_index].uint4s[thread_id];
-
-			#pragma unroll
-			for (int w = 0; w < 4; w++) {
-
-				uint4 s4 = make_uint4(__shfl_sync(0xFFFFFFFF,p4.x, w, 4),
-									  __shfl_sync(0xFFFFFFFF,p4.y, w, 4),
-									  __shfl_sync(0xFFFFFFFF,p4.z, w, 4),
-									  __shfl_sync(0xFFFFFFFF,p4.w, w, 4));
-				if (t == thread_id) {
-					dag_node.uint4s[w] = fnv4(dag_node.uint4s[w], s4);
-				}
-			}
+			dag_node.uint4s[t] = fnv4(dag_node.uint4s[t], g_light[parent_index].uint4s[t]);
 		}
 	}
 	keccak_f1600(dag_node.uint64s);
 
 	for (uint32_t t = 0; t < 4; t++) {
-		uint32_t shuffle_index = __shfl_sync(0xFFFFFFFF,node_index, t, 4);
-		uint4 s[4];
-		for (uint32_t w = 0; w < 4; w++) {
-			s[w] = make_uint4(__shfl_sync(0xFFFFFFFF,dag_node.uint4s[w].x, t, 4),
-						      __shfl_sync(0xFFFFFFFF,dag_node.uint4s[w].y, t, 4),
-							  __shfl_sync(0xFFFFFFFF,dag_node.uint4s[w].z, t, 4),
-							  __shfl_sync(0xFFFFFFFF,dag_node.uint4s[w].w, t, 4));
-		}
-		g_dag[shuffle_index].uint4s[thread_id] = s[thread_id];
+		g_dag[node_index].uint4s[t] = dag_node.uint4s[t];
 	}
 }
 

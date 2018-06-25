@@ -126,8 +126,8 @@ void CUDAMiner::workLoop()
 			{
 				if(!w || w.header == h256())
 				{
-					cnote << "No work.";
-					//std::this_thread::sleep_for(std::chrono::seconds(3));
+					cnote << "No work. Pause for 3 s.";
+					std::this_thread::sleep_for(std::chrono::seconds(3));
 					continue;
 				}
 				if (current.epoch != w.epoch)
@@ -262,8 +262,8 @@ void CUDAMiner::setParallelHash(unsigned _parallelHash)
   	m_parallelHash = _parallelHash;
 }
 
-unsigned const CUDAMiner::c_defaultBlockSize = 512;
-unsigned const CUDAMiner::c_defaultGridSize = 1024; // * CL_DEFAULT_LOCAL_WORK_SIZE
+unsigned const CUDAMiner::c_defaultBlockSize = 128;
+unsigned const CUDAMiner::c_defaultGridSize = 8192; // * CL_DEFAULT_LOCAL_WORK_SIZE
 unsigned const CUDAMiner::c_defaultNumStreams = 2;
 
 bool CUDAMiner::cuda_configureGPU(
@@ -336,7 +336,7 @@ bool CUDAMiner::cuda_init(
 	size_t numDevices,
 	ethash_light_t _light,
 	uint8_t const* _lightData,
-	uint64_t _lightBytes,
+	uint64_t _lightSize,
 	unsigned _deviceId,
 	bool _cpyToHost,
 	uint8_t* &hostDAG,
@@ -361,18 +361,18 @@ bool CUDAMiner::cuda_init(
 		m_search_buf = new volatile search_results *[s_numStreams];
 		m_streams = new cudaStream_t[s_numStreams];
 
-		uint64_t dagBytes = ethash_get_datasize(_light->block_number);
-		uint32_t dagWords   = (unsigned)(dagBytes / ETHASH_MIX_BYTES);
-		uint32_t lightWords = (unsigned)(_lightBytes / sizeof(node));
+		uint64_t dagSize = ethash_get_datasize(_light->block_number);
+		uint32_t dagWords   = (unsigned)(dagSize / ETHASH_MIX_BYTES);
+		uint32_t lightWords = (unsigned)(_lightSize / sizeof(node));
 
 		CUDA_SAFE_CALL(cudaSetDevice(m_device_num));
 		cudalog << "Set Device to current";
 		if(dagWords != m_dag_words || !m_dag)
 		{
 			//Check whether the current device has sufficient memory every time we recreate the dag
-			if (device_props.totalGlobalMem < dagBytes)
+			if (device_props.totalGlobalMem < dagSize)
 			{
-				cudalog <<  "CUDA device " << string(device_props.name) << " has insufficient GPU memory." << device_props.totalGlobalMem << " bytes of memory found < " << dagBytes << " bytes of memory required";
+				cudalog <<  "CUDA device " << string(device_props.name) << " has insufficient GPU memory." << device_props.totalGlobalMem << " bytes of memory found < " << dagSize << " bytes of memory required";
 				return false;
 			}
 			//We need to reset the device and recreate the dag  
@@ -391,18 +391,19 @@ bool CUDAMiner::cuda_init(
 		hash64_t * dag = m_dag;
 		hash64_t * light = m_light[m_device_num];
 
-		compileKernel(_light->block_number, dagWords);
+		// it is actually epoch * 30000;	
+		compileKernel(_light->block_number, dagWords/2);
 
 		if(!light){ 
-			cudalog << "Allocating light with size: " << _lightBytes;
-			CUDA_SAFE_CALL(cudaMalloc(reinterpret_cast<void**>(&light), _lightBytes));
+			cudalog << "Allocating light with size: " << _lightSize;
+			CUDA_SAFE_CALL(cudaMalloc(reinterpret_cast<void**>(&light), _lightSize));
 		}
 		// copy lightData to device
-		CUDA_SAFE_CALL(cudaMemcpy(reinterpret_cast<void*>(light), _lightData, _lightBytes, cudaMemcpyHostToDevice));
+		CUDA_SAFE_CALL(cudaMemcpy(reinterpret_cast<void*>(light), _lightData, _lightSize, cudaMemcpyHostToDevice));
 		m_light[m_device_num] = light;
 		
 		if(dagWords != m_dag_words || !dag) // create buffer for dag
-			CUDA_SAFE_CALL(cudaMalloc(reinterpret_cast<void**>(&dag), dagBytes));
+			CUDA_SAFE_CALL(cudaMalloc(reinterpret_cast<void**>(&dag), dagSize));
 		
 		if(dagWords != m_dag_words || !dag)
 		{
@@ -422,44 +423,22 @@ bool CUDAMiner::cuda_init(
 			if (!hostDAG)
 			{
 				if((m_device_num == dagCreateDevice) || !_cpyToHost){ //if !cpyToHost -> All devices shall generate their DAG
-					int gs = 1024;
 					cudalog << "Generating DAG for GPU #" << m_device_num <<
-							   " with dagBytes: " << dagBytes <<" gridSize: " << gs;
-					ethash_generate_dag(dag, dagBytes, light, lightWords, gs, 512, m_streams[0], m_device_num);
-					hash64_t d[2048];
-					CUDA_SAFE_CALL(cudaMemcpy(reinterpret_cast<void*>(d), dag, 2048*sizeof(hash64_t), cudaMemcpyDeviceToHost));
+							   " with dagBytes: " << dagSize <<" gridSize: " << s_gridSize;
+					ethash_generate_dag(dag, dagSize, light, lightWords, s_gridSize, s_blockSize, m_streams[0], m_device_num);
+					hash64_t d[1024];
+					CUDA_SAFE_CALL(cudaMemcpy(reinterpret_cast<void*>(d), dag, 1024*sizeof(hash64_t), cudaMemcpyDeviceToHost));
 					cudalog << _light->block_number/30000;
-					for (int k=0;k<124;k++)for (int i=0;i<4;i++) cudalog <<k<<" "<< to_hex(d[4*k+i]);
+					for(int k=0;k<124;k++)if (k==0 || k==123)for (int i=0;i<4;i++) cudalog <<k<<" "<< to_hex(d[4*k+i]);
 					//cudalog << to_hex(*(hash64_t*)_lightData);
 
-/*
-cu 09:07:44 cuda-0   193 dag 64bytes x 4 = 2048
-00000000000000000000000000000000000000000000000000000000000000006cfd1da60000000061d7015b00000000cfcf92740000000032c90d0e00000000
-ethash generated first 64bytes of dag
-b28ed8191cb50bd8697a4c45e22b47edbc59983983dcab684d2eefb811c92e862a5aeaf06aefc6d962486b0acc7894c64f8b38f90c165c949cddf3c74ff62072
-
-cuda generated
-0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004f8b38f90c165c949cddf3c74ff62072
-ea1554fcbd4b8a6b17a0503750987abaab5d9a5cf4538f23a1627b93803964dcb1b8f43c87efc92b50df1ca2fcd9c7ac71cfafbd0fd3b914504cdd100f5990da
-c7dd1016b72802a5d7ff3dbbcf285c114ae36b1c150e6ed6962f8d114e77d8a7d70710900a57e7925481008fc8be7f3b6643bee23520116fe5765ca07981e1f0
-1e4a6ba32fc19ac3fe1da98b2ed9ce40c795c7d008bdd063d1be1ca4b0f7eadab049bea1c0907a0525a2bba875039839dce3ff73f4d7e159ae0b038e4bdca329
-
-00000000000000000000000000000000000000000000000000000000000000002a5aeaf06aefc6d962486b0acc7894c64f8b38f90c165c949cddf3c74ff62072
-ea1554fcbd4b8a6b17a0503750987abaab5d9a5cf4538f23a1627b93803964dcb1b8f43c87efc92b50df1ca2fcd9c7ac71cfafbd0fd3b914504cdd100f5990da
-c7dd1016b72802a5d7ff3dbbcf285c114ae36b1c150e6ed6962f8d114e77d8a7d70710900a57e7925481008fc8be7f3b6643bee23520116fe5765ca07981e1f0
-1e4a6ba32fc19ac3fe1da98b2ed9ce40c795c7d008bdd063d1be1ca4b0f7eadab049bea1c0907a0525a2bba875039839dce3ff73f4d7e159ae0b038e4bdca329
- 
-
-b28ed8191cb50bd8697a4c45e22b47edbc59983983dcab684d2eefb811c92e862a5aeaf06aefc6d962486b0acc7894c64f8b38f90c165c949cddf3c74ff62072ea1554fcbd4b8a6b17a0503750987abaab5d9a5cf4538f23a1627b93803964dcb1b8f43c87efc92b50df1ca2fcd9c7ac71cfafbd0fd3b914504cdd100f5990da
-c7dd1016b72802a5d7ff3dbbcf285c114ae36b1c150e6ed6962f8d114e77d8a7d70710900a57e7925481008fc8be7f3b6643bee23520116fe5765ca07981e1f01e4a6ba32fc19ac3fe1da98b2ed9ce40c795c7d008bdd063d1be1ca4b0f7eadab049bea1c0907a0525a2bba875039839dce3ff73f4d7e159ae0b038e4bdca329
-*/
 					cudalog << "Finished DAG";
 
 					if (_cpyToHost)
 					{
-						uint8_t* memoryDAG = new uint8_t[dagBytes];
+						uint8_t* memoryDAG = new uint8_t[dagSize];
 						cudalog << "Copying DAG from GPU #" << m_device_num << " to host";
-						CUDA_SAFE_CALL(cudaMemcpy(reinterpret_cast<void*>(memoryDAG), dag, dagBytes, cudaMemcpyDeviceToHost));
+						CUDA_SAFE_CALL(cudaMemcpy(reinterpret_cast<void*>(memoryDAG), dag, dagSize, cudaMemcpyDeviceToHost));
 
 						hostDAG = memoryDAG;
 					}
@@ -474,7 +453,7 @@ c7dd1016b72802a5d7ff3dbbcf285c114ae36b1c150e6ed6962f8d114e77d8a7d70710900a57e792
 cpyDag:
 				cudalog << "Copying DAG from host to GPU #" << m_device_num;
 				const void* hdag = (const void*)hostDAG;
-				CUDA_SAFE_CALL(cudaMemcpy(reinterpret_cast<void*>(dag), hdag, dagBytes, cudaMemcpyHostToDevice));
+				CUDA_SAFE_CALL(cudaMemcpy(reinterpret_cast<void*>(dag), hdag, dagSize, cudaMemcpyHostToDevice));
 			}
 		}
     
@@ -665,7 +644,11 @@ void CUDAMiner::search(
 				}
 			}
 		}
-		void *args[] = {&m_current_nonce, &m_current_header, &m_current_target, &m_dag, &buffer};
+
+        uint8_t* h;
+        CUDA_SAFE_CALL(cudaMalloc(reinterpret_cast<void**>(&h), 32));
+        CUDA_SAFE_CALL(cudaMemcpy(reinterpret_cast<void*>(h), &m_current_header, 32, cudaMemcpyHostToDevice));
+		void *args[] = {&m_current_nonce, &h, &m_current_target, &m_dag, &buffer};
 		CU_SAFE_CALL(cuLaunchKernel(m_kernel,
 			s_gridSize, 1, 1,   // grid dim
 			s_blockSize, 1, 1,  // block dim

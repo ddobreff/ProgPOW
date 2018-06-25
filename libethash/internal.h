@@ -79,8 +79,8 @@ uint64_t ethash_get_datasize(uint64_t const block_number);
 uint64_t ethash_get_cachesize(uint64_t const block_number);
 
 
-typedef  void * (*lookup_fn2)(void *, epoch_context*, uint32_t) ;
-typedef  uint32_t (*lookup_fn_l1)(epoch_context*, uint32_t) ;
+typedef  void * (*lookup_fn2)(void *, const epoch_context*, uint32_t) ;
+typedef  uint32_t (*lookup_fn_l1)(const epoch_context*, uint32_t) ;
 
 bool progpow_hash(
 	ethash_return_value_t* ret,

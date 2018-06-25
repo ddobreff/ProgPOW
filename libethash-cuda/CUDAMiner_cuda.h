@@ -21,29 +21,31 @@ typedef struct {
 	} result[SEARCH_RESULTS];
 } search_results;
 
-typedef struct
-{
-	uint4 uint4s[32 / sizeof(uint4)];
-} hash32_t;
-
-typedef struct
-{
+typedef struct {
 	uint64_t uint64s[256 / sizeof(uint64_t)];
-} hash256_t;
+} hash256B;
 
 typedef union {
 	uint32_t words[64 / sizeof(uint32_t)];
+	uint64_t uint64s[64 / sizeof(uint64_t)];
 	uint2	 uint2s[64 / sizeof(uint2)];
 	uint4	 uint4s[64 / sizeof(uint4)];
 	uint8_t  bytes[64];
 } hash64_t;
 
 typedef union {
-	uint32_t words[200 / sizeof(uint32_t)];
-	uint64_t uint64s[200 / sizeof(uint64_t)];
-	uint2	 uint2s[200 / sizeof(uint2)];
-	uint4	 uint4s[200 / sizeof(uint4)];
-} hash200_t;
+	uint32_t words[32 / sizeof(uint32_t)];
+	uint2	 uint2s[32 / sizeof(uint2)];
+	uint4	 uint4s[32 / sizeof(uint4)];
+	uint8_t  bytes[32];
+} hash32_t;
+
+typedef union {
+	uint32_t words[128 / sizeof(uint32_t)];
+	uint64_t uint64s[128 / sizeof(uint64_t)];
+	uint2	 uint2s[128 / sizeof(uint2)];
+	uint4	 uint4s[128 / sizeof(uint4)];
+} hash128B;
 
 void ethash_generate_dag(
 	hash64_t* dag,

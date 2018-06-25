@@ -1,5 +1,5 @@
 #ifndef SEARCH_RESULTS
-#define SEARCH_RESULTS 4
+#define SEARCH_RESULTS 1
 #endif
 
 typedef struct {
@@ -74,18 +74,18 @@ __device__ __forceinline__ void keccak_f800_round(uint32_t st[25], const int r)
 
 // Implementation of the Keccak sponge construction (with padding omitted)
 // The width is 800, with a bitrate of 576, and a capacity of 224.
-__device__ __noinline__ uint64_t keccak_f800(hash32_t header, uint64_t seed, hash32_t result)
+__device__ __noinline__ uint64_t keccak_f800(const hash32_t* header, const uint64_t& seed, uint32_t r[4])
 {
     uint32_t st[25];
 
     for (int i = 0; i < 25; i++)
         st[i] = 0;
     for (int i = 0; i < 8; i++)
-        st[i] = header.uint32s[i];
+        st[i] = header->uint32s[i];
     st[8] = seed;
     st[9] = seed >> 32;
     for (int i = 0; i < 4; i++)
-        st[10+i] = result.uint32s[i];
+        st[10+i] = r[i];
 
     for (int r = 0; r < 21; r++) {
         keccak_f800_round(st, r);
@@ -132,8 +132,8 @@ __device__ __forceinline__ void fill_mix(uint64_t seed, uint32_t lane_id, uint32
 
 __global__ void 
 progpow_search(
-    uint64_t start_nonce,
-    const hash32_t header,
+    const uint64_t start_nonce,
+    const hash32_t* header,
     const uint64_t target,
     const uint64_t *g_dag,
     volatile search_results* g_output
@@ -141,24 +141,26 @@ progpow_search(
 {
     __shared__ uint32_t c_dag[PROGPOW_CACHE_WORDS];
     uint32_t const gid = blockIdx.x * blockDim.x + threadIdx.x;
-    uint32_t const nonce = start_nonce + gid;
+    uint64_t const nonce = start_nonce + gid;
 
     const uint32_t lane_id = threadIdx.x & (PROGPOW_LANES - 1);
 
     // Load random data into the cache
     // TODO: should be a new blob of data, not existing DAG data
-    for (uint32_t word = threadIdx.x*2; word < PROGPOW_CACHE_WORDS; word += blockDim.x*2)
+    //for (uint32_t word = threadIdx.x*2; word < PROGPOW_CACHE_WORDS; word += blockDim.x*2)
+    for (uint32_t word = 0; word < PROGPOW_CACHE_WORDS; word += 2)
     {
-        uint64_t data = g_dag[word];
+        uint64_t data = g_dag[32*(word+101)]; // inital sequences of dags not the same as cpu implementation
         c_dag[word + 0] = data;
         c_dag[word + 1] = data >> 32;
     }
 
-    hash32_t result;
+    hash32_t rresult;
+    uint32_t r[4];
     for (int i = 0; i < 4; i++)
-        result.uint32s[i] = 0;
+        r[i] = 0;
     // keccak(header..nonce)
-    uint64_t seed = keccak_f800(header, nonce, result);
+    uint64_t seed = keccak_f800(header, nonce, r);
 
     __syncthreads();
 
@@ -166,6 +168,7 @@ progpow_search(
     for (uint32_t h = 0; h < PROGPOW_LANES; h++)
     {
         uint32_t mix[PROGPOW_REGS];
+        for (int i=0;i<PROGPOW_REGS;i++)mix[i] = 0;
 
         // share the hash's seed across all lanes
         uint64_t hash_seed = __shfl_sync(0xFFFFFFFF, seed, h, PROGPOW_LANES);
@@ -173,9 +176,9 @@ progpow_search(
         fill_mix(hash_seed, lane_id, mix);
 
         #pragma unroll 1
-        for (uint32_t l = 0; l < PROGPOW_CNT_MEM; l++)
+        for (uint32_t l = 0; l < PROGPOW_CNT_MEM; l++) {
             progPowLoop(l, mix, g_dag, c_dag);
-
+        }
 
         // Reduce mix data to a single per-lane result
         uint32_t result_lane = 0x811c9dc5;
@@ -195,11 +198,12 @@ progpow_search(
                 fnv1a(result_hash.uint32s[j], __shfl_sync(0xFFFFFFFF, result_lane, i + j, PROGPOW_LANES));
 
         if (h == lane_id)
-            result = result_hash;
+            for (int i = 0; i < 8; i++)
+                rresult.uint32s[i] = result_hash.uint32s[i];
     }
 
     // keccak(header .. keccak(header..nonce) .. result);
-    if (keccak_f800(header, seed, result) > target)
+    if (keccak_f800(header, seed, rresult.uint32s) > target)
         return;
 
     uint32_t index = atomicInc((uint32_t *)&g_output->count, 0xffffffff);
@@ -209,5 +213,5 @@ progpow_search(
     g_output->result[index].gid = gid;
     #pragma unroll
     for (int i = 0; i < 8; i++)
-        g_output->result[index].mix[i] = result.uint32s[i];
+        g_output->result[index].mix[i] = rresult.uint32s[i];
 }

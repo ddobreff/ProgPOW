@@ -150,100 +150,67 @@ static inline int hash(uint8_t* out, size_t outlen,
 defsha3(256)
 defsha3(512)
 
-/*---------- CUDA implementation */
-#include <limits.h>
-static inline uint64_t ROTL32(uint64_t nn, unsigned int c)
-{
-  uint32_t n = (uint32_t)nn;
-  const unsigned int mask = (CHAR_BIT*sizeof(n) - 1);  // assumes width is a power of 2.
-
-  /* assert ( (c<=mask) &&"rotate by type width or more"); */
-  c &= mask;
-  return (uint64_t)(n<<c) | (n>>( (-c)&mask ));
-}
 
 /* Implementation based on:
-// https://github.com/mjosaarinen/tiny_sha3/blob/master/sha3.c
-// before converted from 64->32 bit words */
-
-__device__ __constant__ const uint64_t keccakf_rndc64[24] = {
-        0x0000000000000001ULL, 0x0000000000008082ULL, 0x800000000000808AULL,
-        0x8000000080008000ULL, 0x000000000000808BULL, 0x0000000080000001ULL,
-        0x8000000080008081ULL, 0x8000000000008009ULL, 0x000000000000008AULL,
-        0x0000000000000088ULL, 0x0000000080008009ULL, 0x000000008000000AULL,
-        0x000000008000808BULL, 0x800000000000008BULL, 0x8000000000008089ULL,
-        0x8000000000008003ULL, 0x8000000000008002ULL, 0x8000000000000080ULL,
-        0x000000000000800AULL, 0x800000008000000AULL, 0x8000000080008081ULL,
-        0x8000000000008080ULL, 0x0000000080000001ULL, 0x8000000080008008ULL
+	https://github.com/mjosaarinen/tiny_sha3/blob/master/sha3.c
+	converted from 64->32 bit words*/
+const uint32_t keccakf_rndc[24] = {
+	0x00000001, 0x00008082, 0x0000808a, 0x80008000, 0x0000808b, 0x80000001,
+	0x80008081, 0x00008009, 0x0000008a, 0x00000088, 0x80008009, 0x8000000a,
+	0x8000808b, 0x0000008b, 0x00008089, 0x00008003, 0x00008002, 0x00000080,
+	0x0000800a, 0x8000000a, 0x80008081, 0x00008080, 0x80000001, 0x80008008
 };
 
-__device__ __forceinline__ void keccak_f1600p_round(uint64_t st[25], const int r)
+#define ROTL(x,n,w) (((x) << (n)) | ((x) >> ((w) - (n))))
+#define ROTL32(x,n) ROTL(x,n,32)	/* 32 bits word */
+
+void keccak_f800_round(uint32_t st[25], const int r)
 {
 
-        const uint32_t keccakf_rotc[24] = {
-                1,  3,  6,  10, 15, 21, 28, 36, 45, 55, 2,  14,
-                27, 41, 56, 8,  25, 43, 62, 18, 39, 61, 20, 44
-        };
-        const uint32_t keccakf_piln[24] = {
-                10, 7,  11, 17, 18, 3, 5,  16, 8,  21, 24, 4,
-                15, 23, 19, 13, 12, 2, 20, 14, 22, 9,  6,  1
-        };
+	const uint32_t keccakf_rotc[24] = {
+		1,  3,  6,  10, 15, 21, 28, 36, 45, 55, 2,  14,
+		27, 41, 56, 8,  25, 43, 62, 18, 39, 61, 20, 44
+	};
+	const uint32_t keccakf_piln[24] = {
+		10, 7,  11, 17, 18, 3, 5,  16, 8,  21, 24, 4,
+		15, 23, 19, 13, 12, 2, 20, 14, 22, 9,  6,  1
+	};
 
-        uint64_t t, bc[5];
-        // Theta
-        for (int i = 0; i < 5; i++)
-                bc[i] = st[i] ^ st[i + 5] ^ st[i + 10] ^ st[i + 15] ^ st[i + 20];
+	uint32_t t, bc[5];
+	/* Theta*/
+	uint32_t i = 0, j = 0;
+	for (i = 0; i < 5; i++)
+		bc[i] = st[i] ^ st[i + 5] ^ st[i + 10] ^ st[i + 15] ^ st[i + 20];
 
-        for (uint32_t i = 0; i < 5; i++) {
-                t = bc[(i + 4) % 5] ^ ROTL32(bc[(i + 1) % 5], 1);
-                for (uint32_t j = 0; j < 25; j += 5)
-                        st[j + i] ^= t;
-        }
-
-        // Rho Pi
-        t = st[1];
-        for (uint32_t i = 0; i < 24; i++) {
-                uint32_t j = keccakf_piln[i];
-                bc[0] = st[j];
-                st[j] = ROTL32(t, keccakf_rotc[i]);
-                t = bc[0];
-        }
-
-        //  Chi
-        for (uint32_t j = 0; j < 25; j += 5) {
-                for (uint32_t i = 0; i < 5; i++)
-                        bc[i] = st[j + i];
-                for (uint32_t i = 0; i < 5; i++)
-                        st[j + i] ^= (~bc[(i + 1) % 5]) & bc[(i + 2) % 5];
-        }
-
-        //  Iota
-        st[0] ^= keccakf_rndc64[r];
-}
-
-__device__ __forceinline__ void keccak_f1600p(uint64_t st[25])
-{
-        for (int i = 8; i < 25; i++)
-        {
-                st[i] = 0;
-        }
-        st[8] = 0x8000000000000001;
-
-        for (int r = 0; r < 24; r++) {
-                keccak_f1600p_round(st, r);
-        }
-}
-
-
-#define defsha3p(bits)													\
-	int sha3_##bits##p(uint8_t* out, size_t outlen,						\
-		const uint8_t* in, size_t inlen) {								\
-		if (outlen > (bits/8)) {										\
-			return -1;                                                  \
-		}																\
-		return hash(out, outlen, in, inlen, 200 - (bits / 4), 0x01);	\
+	i = 0;
+	for (i = 0; i < 5; i++) {
+		t = bc[(i + 4) % 5] ^ ROTL32(bc[(i + 1) % 5], 1);
+		j = 0;
+		for (j = 0; j < 25; j += 5)
+			st[j + i] ^= t;
 	}
 
-/*** FIPS202 SHA3 FOFs ***/
-defsha3p(256)
-defsha3p(512)
+	/*Rho Pi*/
+	i = 0;
+	t = st[1];
+	for (i = 0; i < 24; i++) {
+		uint32_t jj = keccakf_piln[i];
+		bc[0] = st[jj];
+		st[jj] = ROTL32(t, keccakf_rotc[i]);
+		t = bc[0];
+	}
+
+	/* Chi*/
+	j = 0;
+	for (j = 0; j < 25; j += 5) {
+		i = 0;
+		for (i = 0; i < 5; i++)
+			bc[i] = st[j + i];
+		i = 0;
+		for (i = 0; i < 5; i++)
+			st[j + i] ^= (~bc[(i + 1) % 5]) & bc[(i + 2) % 5];
+	}
+
+	/* Iota*/
+	st[0] ^= keccakf_rndc[r];
+}
